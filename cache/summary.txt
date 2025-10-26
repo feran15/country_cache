@@ -1,0 +1,10 @@
+Total Countries: 250
+
+Top 5 by GDP:
+United States of America: 596037000000.00
+China: 218557000000.00
+France: 145089000000.00
+Germany: 142342000000.00
+United Kingdom of Great Britain and Northern Ireland: 114625000000.00
+
+Last Refresh: 2025-10-26T09:34:34.456Z
