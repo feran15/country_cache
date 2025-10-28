@@ -3,8 +3,8 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
-import sharp from "sharp";
 import fetch from "node-fetch";
+import { createCanvas } from "canvas";
 
 dotenv.config();
 
@@ -13,11 +13,10 @@ app.use(express.json());
 
 const __dirname = path.resolve();
 
-// 🧩 MySQL connection (Aiven ready)
+// 🧩 MySQL connection
 let db;
 async function connectDB() {
   try {
-    // Step 1️⃣ — Connect without specifying DB
     const baseConnection = await mysql.createConnection({
       host: process.env.DB_HOST,
       port: process.env.DB_PORT || 3306,
@@ -26,14 +25,12 @@ async function connectDB() {
       ssl: { rejectUnauthorized: false },
     });
 
-    // Step 2️⃣ — Ensure database exists
+    // Ensure DB exists
     await baseConnection.query(
       `CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME}\`;`
     );
-    console.log(`✅ Database ensured: ${process.env.DB_NAME}`);
     await baseConnection.end();
 
-    // Step 3️⃣ — Connect to the DB
     db = await mysql.createConnection({
       host: process.env.DB_HOST,
       port: process.env.DB_PORT || 3306,
@@ -43,11 +40,11 @@ async function connectDB() {
       ssl: { rejectUnauthorized: false },
     });
 
-    // Step 4️⃣ — Ensure 'countries' table exists
+    // Create countries table with case-insensitive name
     await db.query(`
       CREATE TABLE IF NOT EXISTS countries (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255),
+        name VARCHAR(255) COLLATE utf8_general_ci,
         capital VARCHAR(255),
         region VARCHAR(255),
         population BIGINT,
@@ -56,59 +53,75 @@ async function connectDB() {
       )
     `);
 
-    console.log("✅ Connected to MySQL (Aiven) & ensured 'countries' table");
+    console.log("✅ DB connected & table ensured");
   } catch (err) {
     console.error("❌ DB connection failed:", err.message);
   }
 }
 
-// 🗂 Cache folder setup
+// 🗂 Cache folder
 const cacheDir = path.join(__dirname, "cache");
 const cachePath = path.join(cacheDir, "summary.png");
 if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir);
 
-// 🟢 TEST 1 — POST /countries/refresh
+// 🟢 POST /countries/refresh
 app.post("/countries/refresh", async (req, res) => {
   try {
-    // Fetch data from REST Countries API
     const response = await fetch(
-      " https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
+      "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
     );
     const countries = await response.json();
 
-    // Clear existing data
+    // Clear table
     await db.query("DELETE FROM countries");
 
-    // Insert new data
-    for (const c of countries) {
-      const code = c.currencies?.[0]?.code || "N/A";
+    // Bulk insert
+    if (countries.length) {
+      const values = countries.map(c => [
+        c.name,
+        c.capital,
+        c.region,
+        c.population,
+        c.flag,
+        c.currencies?.[0]?.code || "N/A",
+      ]);
+      const placeholders = values.map(() => "(?, ?, ?, ?, ?, ?)").join(",");
+      const flatValues = values.flat();
       await db.query(
-        "INSERT INTO countries (name, capital, region, population, flag, currency) VALUES (?, ?, ?, ?, ?, ?)",
-        [c.name, c.capital, c.region, c.population, c.flag, code]
+        `INSERT INTO countries (name, capital, region, population, flag, currency) VALUES ${placeholders}`,
+        flatValues
       );
     }
 
-    // Generate summary
+    // Count total
     const [rows] = await db.query("SELECT COUNT(*) AS total FROM countries");
     const total = rows[0]?.total || 0;
-
     const summary = `Countries refreshed: ${total} at ${new Date().toISOString()}`;
     fs.writeFileSync(path.join(cacheDir, "summary.txt"), summary);
 
-    await sharp({
-      text: { text: summary, font: "sans", fontSize: 18, width: 500 },
-    })
-      .png()
-      .toFile(cachePath);
-
+    // Respond first
     res.json({ message: "Countries refreshed", total });
+
+    // Generate summary image asynchronously
+    try {
+      const canvas = createCanvas(600, 50);
+      const ctx = canvas.getContext("2d");
+      ctx.font = "18px sans-serif";
+      ctx.fillStyle = "#000";
+      ctx.fillText(summary, 10, 30);
+      const buffer = canvas.toBuffer("image/png");
+      fs.writeFileSync(cachePath, buffer);
+      console.log("✅ Summary image created");
+    } catch (err) {
+      console.error("❌ Failed to generate image:", err);
+    }
   } catch (err) {
     console.error("❌ Error in refresh:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🟢 TEST 2 — GET /countries (with optional filters/sorting)
+// 🟢 GET /countries
 app.get("/countries", async (req, res) => {
   try {
     const { region, sort } = req.query;
@@ -132,13 +145,14 @@ app.get("/countries", async (req, res) => {
   }
 });
 
-// 🟢 TEST 3 — GET /countries/:name
+// 🟢 GET /countries/:name (case-insensitive, trimmed)
 app.get("/countries/:name", async (req, res) => {
   try {
     const { name } = req.params;
-    const [rows] = await db.query("SELECT * FROM countries WHERE name = ?", [
-      name,
-    ]);
+    const [rows] = await db.query(
+      "SELECT * FROM countries WHERE TRIM(LOWER(name)) = TRIM(LOWER(?))",
+      [name]
+    );
     if (!rows.length) return res.status(404).json({ error: "Country not found" });
     res.json(rows[0]);
   } catch (err) {
@@ -146,13 +160,14 @@ app.get("/countries/:name", async (req, res) => {
   }
 });
 
-// 🟢 TEST 4 — DELETE /countries/:name
+// 🟢 DELETE /countries/:name
 app.delete("/countries/:name", async (req, res) => {
   try {
     const { name } = req.params;
-    const [result] = await db.query("DELETE FROM countries WHERE name = ?", [
-      name,
-    ]);
+    const [result] = await db.query(
+      "DELETE FROM countries WHERE TRIM(LOWER(name)) = TRIM(LOWER(?))",
+      [name]
+    );
     if (result.affectedRows === 0)
       return res.status(404).json({ error: "Country not found" });
     res.json({ message: "Country deleted successfully" });
@@ -161,7 +176,7 @@ app.delete("/countries/:name", async (req, res) => {
   }
 });
 
-// 🟢 TEST 5 — GET /status
+// 🟢 GET /status
 app.get("/status", async (req, res) => {
   try {
     const [rows] = await db.query("SELECT COUNT(*) as total FROM countries");
@@ -175,7 +190,7 @@ app.get("/status", async (req, res) => {
   }
 });
 
-// 🟢 TEST 6 — GET /countries/image
+// 🟢 GET /countries/image
 app.get("/countries/image", (req, res) => {
   if (!fs.existsSync(cachePath))
     return res.status(404).json({ error: "Summary image not found" });
@@ -185,12 +200,9 @@ app.get("/countries/image", (req, res) => {
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
 
-// 🚀 Start server only after DB connection
+// 🚀 Start server
 const PORT = process.env.PORT || 4000;
-
 (async () => {
   await connectDB();
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-  });
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 })();
