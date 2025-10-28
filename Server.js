@@ -13,22 +13,39 @@ app.use(express.json());
 const __dirname = path.resolve();
 
 // 🧩 MySQL connection setup
-const db = await mysql.createConnection({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME,
-});
+let db;
+
+async function connectDB() {
+  try {
+    db = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT || 3306,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD || "",
+      database: process.env.DB_NAME,
+      ssl: { rejectUnauthorized: false }, // ✅ Aiven requires SSL
+    });
+    console.log("✅ Connected to Aiven MySQL database");
+  } catch (err) {
+    console.error("❌ Database connection failed:", err.message);
+    process.exit(1); // Stop app if DB fails
+  }
+}
 
 // 🗂 Path to cache folder
 const cacheDir = path.join(__dirname, "cache");
 const cachePath = path.join(cacheDir, "summary.png");
 
+// Ensure cache folder exists
+if (!fs.existsSync(cacheDir)) {
+  fs.mkdirSync(cacheDir);
+}
+
 // ✅ Route to refresh and generate summary
 app.get("/countries/refresh", async (req, res) => {
   try {
     const [rows] = await db.query("SELECT COUNT(*) as total FROM countries");
-    const totalCountries = rows[0].total || 0;
+    const totalCountries = rows[0]?.total || 0;
 
     const [top5] = await db.query(
       "SELECT name, gdp FROM countries ORDER BY gdp DESC LIMIT 5"
@@ -83,6 +100,11 @@ app.get("/countries/image", (req, res) => {
   res.sendFile(path.resolve(cachePath));
 });
 
+// ✅ Health check route for Leapcell
+app.get("/kaithheathcheck", (req, res) => {
+  res.status(200).json({ message: "Service healthy" });
+});
+
 // ✅ Test route
 app.get("/", (req, res) => {
   res.send("✅ Country Cache API is running...");
@@ -93,6 +115,12 @@ app.use((req, res) => {
   res.status(404).json({ error: "Not found" });
 });
 
-// 🖥️ Start server
+// 🖥️ Start server after DB connection
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+(async () => {
+  await connectDB();
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+  });
+})();
