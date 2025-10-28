@@ -17,6 +17,23 @@ const __dirname = path.resolve();
 let db;
 async function connectDB() {
   try {
+    // Step 1️⃣ — Connect without specifying DB
+    const baseConnection = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT || 3306,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD || "",
+      ssl: { rejectUnauthorized: false },
+    });
+
+    // Step 2️⃣ — Ensure database exists
+    await baseConnection.query(
+      `CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME}\`;`
+    );
+    console.log(`✅ Database ensured: ${process.env.DB_NAME}`);
+    await baseConnection.end();
+
+    // Step 3️⃣ — Connect to the DB
     db = await mysql.createConnection({
       host: process.env.DB_HOST,
       port: process.env.DB_PORT || 3306,
@@ -25,7 +42,21 @@ async function connectDB() {
       database: process.env.DB_NAME,
       ssl: { rejectUnauthorized: false },
     });
-    console.log("✅ Connected to Aiven MySQL");
+
+    // Step 4️⃣ — Ensure 'countries' table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS countries (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255),
+        capital VARCHAR(255),
+        region VARCHAR(255),
+        population BIGINT,
+        flag TEXT,
+        currency VARCHAR(10)
+      )
+    `);
+
+    console.log("✅ Connected to MySQL (Aiven) & ensured 'countries' table");
   } catch (err) {
     console.error("❌ DB connection failed:", err.message);
   }
@@ -41,7 +72,7 @@ app.post("/countries/refresh", async (req, res) => {
   try {
     // Fetch data from REST Countries API
     const response = await fetch(
-      "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
+      " https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
     );
     const countries = await response.json();
 
@@ -154,9 +185,12 @@ app.get("/countries/image", (req, res) => {
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
 
-// 🚀 Start server
+// 🚀 Start server only after DB connection
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+
+(async () => {
   await connectDB();
-});
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+  });
+})();
