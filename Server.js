@@ -7,7 +7,6 @@ import fetch from "node-fetch";
 import { createCanvas } from "canvas";
 
 dotenv.config();
-
 const app = express();
 app.use(express.json());
 
@@ -25,7 +24,6 @@ async function connectDB() {
       ssl: { rejectUnauthorized: false },
     });
 
-    // Ensure DB exists
     await baseConnection.query(
       `CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME}\`;`
     );
@@ -40,7 +38,6 @@ async function connectDB() {
       ssl: { rejectUnauthorized: false },
     });
 
-    // Create countries table with case-insensitive name
     await db.query(`
       CREATE TABLE IF NOT EXISTS countries (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -53,13 +50,13 @@ async function connectDB() {
       )
     `);
 
-    console.log("✅ DB connected & table ensured");
+    console.log("✅ Database connected & table ready");
   } catch (err) {
-    console.error("❌ DB connection failed:", err.message);
+    console.error("❌ Database connection failed:", err.message);
   }
 }
 
-// 🗂 Cache folder
+// 🗂 Cache setup
 const cacheDir = path.join(__dirname, "cache");
 const cachePath = path.join(cacheDir, "summary.png");
 if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir);
@@ -72,12 +69,10 @@ app.post("/countries/refresh", async (req, res) => {
     );
     const countries = await response.json();
 
-    // Clear table
     await db.query("DELETE FROM countries");
 
-    // Bulk insert
     if (countries.length) {
-      const values = countries.map(c => [
+      const values = countries.map((c) => [
         c.name,
         c.capital,
         c.region,
@@ -86,37 +81,46 @@ app.post("/countries/refresh", async (req, res) => {
         c.currencies?.[0]?.code || "N/A",
       ]);
       const placeholders = values.map(() => "(?, ?, ?, ?, ?, ?)").join(",");
-      const flatValues = values.flat();
       await db.query(
         `INSERT INTO countries (name, capital, region, population, flag, currency) VALUES ${placeholders}`,
-        flatValues
+        values.flat()
       );
     }
 
-    // Count total
     const [rows] = await db.query("SELECT COUNT(*) AS total FROM countries");
     const total = rows[0]?.total || 0;
     const summary = `Countries refreshed: ${total} at ${new Date().toISOString()}`;
     fs.writeFileSync(path.join(cacheDir, "summary.txt"), summary);
 
-    // Respond first
+    // Respond immediately (faster response)
     res.json({ message: "Countries refreshed", total });
 
-    // Generate summary image asynchronously
+    // Generate readable summary image (async)
     try {
-      const canvas = createCanvas(600, 50);
+      const width = 800;
+      const height = 200;
+      const canvas = createCanvas(width, height);
       const ctx = canvas.getContext("2d");
-      ctx.font = "18px sans-serif";
-      ctx.fillStyle = "#000";
-      ctx.fillText(summary, 10, 30);
+
+      // White background
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+
+      // Text style
+      ctx.fillStyle = "#000000";
+      ctx.font = "bold 24px Sans";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(summary, width / 2, height / 2);
+
       const buffer = canvas.toBuffer("image/png");
       fs.writeFileSync(cachePath, buffer);
-      console.log("✅ Summary image created");
+      console.log("✅ Summary image generated");
     } catch (err) {
-      console.error("❌ Failed to generate image:", err);
+      console.error("❌ Failed to create summary image:", err.message);
     }
   } catch (err) {
-    console.error("❌ Error in refresh:", err);
+    console.error("❌ Error in /countries/refresh:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -140,12 +144,35 @@ app.get("/countries", async (req, res) => {
     const [rows] = await db.query(query, params);
     res.json(rows);
   } catch (err) {
-    console.error("❌ Error fetching countries:", err);
     res.status(500).json({ error: err.message });
   }
 });
+// 🟢 GET /status
+app.get("/status", async (req, res) => {
+  try {
+    const [rows] = await db.query("SELECT COUNT(*) AS total FROM countries");
+    res.json({
+      status: "ok",
+      countries: rows[0].total,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: "DB not reachable" });
+  }
+});
 
-// 🟢 GET /countries/:name (case-insensitive, trimmed)
+
+
+// 🟢 GET /countries/image
+app.get("/countries/image", (req, res) => {
+  if (!fs.existsSync(cachePath))
+    return res.status(404).json({ error: "Summary image not found" });  
+  res.sendFile(path.resolve(cachePath));
+});  
+
+
+
+// 🟢 GET /countries/:name
 app.get("/countries/:name", async (req, res) => {
   try {
     const { name } = req.params;
@@ -153,7 +180,8 @@ app.get("/countries/:name", async (req, res) => {
       "SELECT * FROM countries WHERE TRIM(LOWER(name)) = TRIM(LOWER(?))",
       [name]
     );
-    if (!rows.length) return res.status(404).json({ error: "Country not found" });
+    if (!rows.length)
+      return res.status(404).json({ error: "Country not found" });
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -176,26 +204,7 @@ app.delete("/countries/:name", async (req, res) => {
   }
 });
 
-// 🟢 GET /status
-app.get("/status", async (req, res) => {
-  try {
-    const [rows] = await db.query("SELECT COUNT(*) as total FROM countries");
-    res.json({
-      status: "ok",
-      countries: rows[0].total,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (err) {
-    res.status(500).json({ error: "DB not reachable" });
-  }
-});
 
-// 🟢 GET /countries/image
-app.get("/countries/image", (req, res) => {
-  if (!fs.existsSync(cachePath))
-    return res.status(404).json({ error: "Summary image not found" });
-  res.sendFile(path.resolve(cachePath));
-});
 
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
@@ -204,5 +213,7 @@ app.use((req, res) => res.status(404).json({ error: "Not found" }));
 const PORT = process.env.PORT || 4000;
 (async () => {
   await connectDB();
-  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+  app.listen(PORT, () =>
+    console.log(`🚀 Server running on port ${PORT}`)
+  );
 })();
