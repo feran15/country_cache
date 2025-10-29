@@ -1,23 +1,20 @@
 import express from "express";
 import mongoose from "mongoose";
-import fetch from "node-fetch";
-import { ChartJSNodeCanvas } from "chartjs-node-canvas";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import { ChartJSNodeCanvas } from "chartjs-node-canvas";
 
 dotenv.config();
+
 const app = express();
 app.use(express.json());
 
-// MongoDB Connection
-await mongoose.connect(process.env.MONGO_URI || "mongodb://localhost:27017/country_cache", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
+// ✅ MongoDB Connection
+await mongoose.connect(process.env.MONGO_URI || "mongodb://localhost:27017/country_cache");
 console.log("✅ Connected to MongoDB");
 
-// Schema & Model
+// 🧱 Schema + Model
 const countrySchema = new mongoose.Schema({
   name: String,
   capital: String,
@@ -28,120 +25,96 @@ const countrySchema = new mongoose.Schema({
   exchange_rate: Number,
   estimated_gdp: Number,
 });
+
 const Country = mongoose.model("Country", countrySchema);
 
-// File path for cached image
+// 📁 File path for chart
 const cachePath = path.join(process.cwd(), "summary.png");
 
-// Generate PNG summary chart
+// 📊 Generate GDP summary chart
 async function generateSummaryImage() {
-  try {
-    const countries = await Country.find().sort({ estimated_gdp: -1 }).limit(10);
-    if (countries.length === 0) return null;
+  const countries = await Country.find().sort({ estimated_gdp: -1 }).limit(10);
+  if (countries.length === 0) return null;
 
-    const chart = new ChartJSNodeCanvas({ width: 1000, height: 600 });
-    const config = {
-      type: "bar",
-      data: {
-        labels: countries.map((c) => c.name),
-        datasets: [
-          {
-            label: "Estimated GDP (USD)",
-            data: countries.map((c) => c.estimated_gdp),
-            backgroundColor: "rgba(37, 99, 235, 0.8)",
-          },
-        ],
-      },
-      options: {
-        plugins: {
-          title: {
-            display: true,
-            text: "Top 10 Countries by Estimated GDP",
-            font: { size: 22 },
-          },
-          legend: { display: false },
+  const chart = new ChartJSNodeCanvas({ width: 1000, height: 600 });
+  const configuration = {
+    type: "bar",
+    data: {
+      labels: countries.map((c) => c.name),
+      datasets: [
+        {
+          label: "Estimated GDP (USD)",
+          data: countries.map((c) => c.estimated_gdp),
+          backgroundColor: "rgba(59,130,246,0.8)",
         },
-        scales: {
-          x: { ticks: { color: "#000" } },
-          y: { ticks: { color: "#000" } },
+      ],
+    },
+    options: {
+      plugins: {
+        title: {
+          display: true,
+          text: "Top 10 Countries by Estimated GDP",
+          font: { size: 22 },
         },
+        legend: { display: false },
       },
-    };
+      scales: {
+        x: { ticks: { color: "#000" } },
+        y: { ticks: { color: "#000" } },
+      },
+    },
+  };
 
-    const buffer = await chart.renderToBuffer(config, "image/png");
-    fs.writeFileSync(cachePath, buffer);
-    console.log("✅ Summary image updated");
-    return cachePath;
-  } catch (err) {
-    console.error("❌ Image generation failed:", err.message);
-  }
+  const buffer = await chart.renderToBuffer(configuration, "image/png");
+  fs.writeFileSync(cachePath, buffer);
+  console.log("✅ PNG chart created:", cachePath);
+  return cachePath;
 }
 
-import fetch from "node-fetch";
-import AbortController from "abort-controller";
-
+// 🟢 POST /countries/refresh
 app.post("/countries/refresh", async (req, res) => {
   try {
-    // Respond right away
-    res.status(200).json({ message: "Refresh started in background" });
+    console.log("🌍 Refreshing countries...");
+    const response = await fetch(
+      "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
+    );
+    const data = await response.json();
 
-    // Run refresh in background
-    (async () => {
-      console.log("🌍 Starting refresh job...");
+    await Country.deleteMany({});
 
-      // Timeout controller (to prevent hanging fetch)
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+    const bulkOps = data.map((c) => {
+      const currency_code = c.currencies?.[0]?.code || "USD";
+      const exchange_rate = Math.random() * (2000 - 1000) + 1000;
+      const estimated_gdp = Math.round((c.population * exchange_rate) / 1000);
 
-      let data = [];
-      try {
-        const response = await fetch(
-          "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies",
-          { signal: controller.signal }
-        );
-        clearTimeout(timeout);
-        data = await response.json();
-      } catch (err) {
-        console.error("❌ Fetch failed:", err.message);
-        return;
-      }
+      return {
+        insertOne: {
+          document: {
+            name: c.name,
+            capital: c.capital,
+            region: c.region,
+            population: c.population,
+            flag: c.flag,
+            currency_code,
+            exchange_rate,
+            estimated_gdp,
+          },
+        },
+      };
+    });
 
-      try {
-        await Country.deleteMany({});
-        const bulkOps = data.map((c) => {
-          const currency_code = c.currencies?.[0]?.code || "USD";
-          const exchange_rate = Math.random() * (2000 - 1000) + 1000;
-          const estimated_gdp = Math.round((c.population * exchange_rate) / 1000);
-          return {
-            insertOne: {
-              document: {
-                name: c.name,
-                capital: c.capital,
-                region: c.region,
-                population: c.population,
-                flag: c.flag,
-                currency_code,
-                exchange_rate,
-                estimated_gdp,
-              },
-            },
-          };
-        });
+    await Country.bulkWrite(bulkOps);
+    await generateSummaryImage();
 
-        await Country.bulkWrite(bulkOps);
-        console.log(`✅ Refreshed ${data.length} countries`);
-      } catch (err) {
-        console.error("❌ Mongo write failed:", err.message);
-      }
-    })();
+    const total = await Country.countDocuments();
+    res.json({ message: "Countries refreshed", total });
   } catch (err) {
-    console.error("❌ Unexpected error:", err.message);
-    res.status(500).json({ error: "Failed to start refresh" });
+    console.error("❌ Refresh error:", err);
+    res.status(500).json({ error: "Failed to refresh countries" });
   }
 });
 
-
-// GET /countries/image
+// 🟢 GET /countries/image
 app.get("/countries/image", (req, res) => {
   if (!fs.existsSync(cachePath)) {
     return res.status(404).json({ error: "Summary image not found" });
@@ -150,7 +123,7 @@ app.get("/countries/image", (req, res) => {
   res.sendFile(path.resolve(cachePath));
 });
 
-// GET /countries (filter & sort)
+// 🟢 GET /countries (with filters & sorting)
 app.get("/countries", async (req, res) => {
   try {
     const { region, currency, sort } = req.query;
@@ -168,7 +141,7 @@ app.get("/countries", async (req, res) => {
   }
 });
 
-// GET /countries/:name
+// 🟢 GET /countries/:name
 app.get("/countries/:name", async (req, res) => {
   try {
     const country = await Country.findOne({
@@ -181,7 +154,7 @@ app.get("/countries/:name", async (req, res) => {
   }
 });
 
-// DELETE /countries/:name
+// 🟢 DELETE /countries/:name
 app.delete("/countries/:name", async (req, res) => {
   try {
     const result = await Country.deleteOne({
@@ -195,23 +168,26 @@ app.delete("/countries/:name", async (req, res) => {
   }
 });
 
-// GET /status
+// 🟢 GET /status
 app.get("/status", async (req, res) => {
   try {
     const total = await Country.countDocuments();
+    const stats = fs.existsSync(cachePath)
+      ? fs.statSync(cachePath)
+      : { mtime: new Date() };
     res.json({
       status: "ok",
       total_countries: total,
-      last_refreshed_at: new Date().toISOString(),
+      last_refreshed_at: stats.mtime.toISOString(),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 404 fallback
+// 🟡 404 fallback
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
 
-// Start server
+// 🚀 Server Start
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
