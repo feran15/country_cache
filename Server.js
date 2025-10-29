@@ -4,6 +4,7 @@ import path from "path";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
 import fetch from "node-fetch";
+import sharp from "sharp"; // ✅ for text-to-image generation (no native issues)
 
 dotenv.config();
 const app = express();
@@ -91,21 +92,34 @@ app.post("/countries/refresh", async (req, res) => {
     const summary = `Countries refreshed: ${total} at ${new Date().toISOString()}`;
     fs.writeFileSync(path.join(cacheDir, "summary.txt"), summary);
 
-    // Respond immediately for faster user feedback
+    // Respond quickly
     res.json({ message: "Countries refreshed", total });
 
-    // ✅ Generate a lightweight PNG placeholder (no canvas)
+    // ✅ Generate a proper PNG summary image using Sharp
     try {
-      const pngHeader = Buffer.from(
-        "89504E470D0A1A0A0000000D49484452000000010000000108020000009077530000000A49444154789C636000000200010005FE02FEA70000000049454E44AE426082",
-        "hex"
-      );
-      const textBuffer = Buffer.from(`\n${summary}\n`, "utf8");
-      const buffer = Buffer.concat([pngHeader, textBuffer]);
+      const svg = `
+        <svg width="700" height="220" xmlns="http://www.w3.org/2000/svg">
+          <rect width="100%" height="100%" fill="#f9fafb" rx="20" ry="20"/>
+          <text x="40" y="70" font-size="28" font-family="Arial" fill="#111827" font-weight="bold">
+            🌍 Country Summary
+          </text>
+          <text x="40" y="120" font-size="22" font-family="Arial" fill="#1e293b">
+            Countries refreshed: ${total}
+          </text>
+          <text x="40" y="160" font-size="18" font-family="Arial" fill="#6b7280">
+            ${new Date().toLocaleString()}
+          </text>
+        </svg>
+      `;
+
+      const buffer = await sharp(Buffer.from(svg))
+        .png()
+        .toBuffer();
+
       fs.writeFileSync(cachePath, buffer);
-      console.log("✅ Summary placeholder image created");
+      console.log("✅ Summary image created successfully (Sharp)");
     } catch (err) {
-      console.error("❌ Failed to create placeholder image:", err.message);
+      console.error("❌ Failed to create summary image:", err.message);
     }
   } catch (err) {
     console.error("❌ Error in /countries/refresh:", err);
@@ -150,7 +164,7 @@ app.get("/status", async (req, res) => {
   }
 });
 
-// 🟢 GET /countries/image (must be before /:name)
+// 🟢 GET /countries/image (serve the summary PNG)
 app.get("/countries/image", (req, res) => {
   if (!fs.existsSync(cachePath))
     return res.status(404).json({ error: "Summary image not found" });
