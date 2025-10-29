@@ -4,7 +4,6 @@ import path from "path";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
 import fetch from "node-fetch";
-import { createCanvas } from "canvas";
 
 dotenv.config();
 const app = express();
@@ -92,32 +91,21 @@ app.post("/countries/refresh", async (req, res) => {
     const summary = `Countries refreshed: ${total} at ${new Date().toISOString()}`;
     fs.writeFileSync(path.join(cacheDir, "summary.txt"), summary);
 
-    // Respond immediately (faster response)
+    // Respond immediately for faster user feedback
     res.json({ message: "Countries refreshed", total });
 
-    // Generate readable summary image (async)
+    // ✅ Generate a lightweight PNG placeholder (no canvas)
     try {
-      const width = 800;
-      const height = 200;
-      const canvas = createCanvas(width, height);
-      const ctx = canvas.getContext("2d");
-
-      // White background
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, width, height);
-
-      // Text style
-      ctx.fillStyle = "#000000";
-      ctx.font = "bold 24px Sans";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(summary, width / 2, height / 2);
-
-      const buffer = canvas.toBuffer("image/png");
+      const pngHeader = Buffer.from(
+        "89504E470D0A1A0A0000000D49484452000000010000000108020000009077530000000A49444154789C636000000200010005FE02FEA70000000049454E44AE426082",
+        "hex"
+      );
+      const textBuffer = Buffer.from(`\n${summary}\n`, "utf8");
+      const buffer = Buffer.concat([pngHeader, textBuffer]);
       fs.writeFileSync(cachePath, buffer);
-      console.log("✅ Summary image generated");
+      console.log("✅ Summary placeholder image created");
     } catch (err) {
-      console.error("❌ Failed to create summary image:", err.message);
+      console.error("❌ Failed to create placeholder image:", err.message);
     }
   } catch (err) {
     console.error("❌ Error in /countries/refresh:", err);
@@ -147,6 +135,7 @@ app.get("/countries", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // 🟢 GET /status
 app.get("/status", async (req, res) => {
   try {
@@ -161,16 +150,12 @@ app.get("/status", async (req, res) => {
   }
 });
 
-
-
-// 🟢 GET /countries/image
+// 🟢 GET /countries/image (must be before /:name)
 app.get("/countries/image", (req, res) => {
   if (!fs.existsSync(cachePath))
-    return res.status(404).json({ error: "Summary image not found" });  
+    return res.status(404).json({ error: "Summary image not found" });
   res.sendFile(path.resolve(cachePath));
-});  
-
-
+});
 
 // 🟢 GET /countries/:name
 app.get("/countries/:name", async (req, res) => {
@@ -203,8 +188,6 @@ app.delete("/countries/:name", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-
 
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
