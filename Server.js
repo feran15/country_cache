@@ -14,7 +14,7 @@ app.use(express.json());
 await mongoose.connect(process.env.MONGO_URI || "mongodb://localhost:27017/country_cache");
 console.log("✅ Connected to MongoDB");
 
-// 🧱 Schema + Model
+// 🧱 Schema
 const countrySchema = new mongoose.Schema({
   name: String,
   capital: String,
@@ -25,19 +25,17 @@ const countrySchema = new mongoose.Schema({
   exchange_rate: Number,
   estimated_gdp: Number,
 });
-
 const Country = mongoose.model("Country", countrySchema);
 
-// 📁 File path for chart
 const cachePath = path.join(process.cwd(), "summary.png");
 
-// 📊 Generate GDP summary chart
+// ⚡ Fast Chart Generation (Top 10 GDP)
 async function generateSummaryImage() {
   const countries = await Country.find().sort({ estimated_gdp: -1 }).limit(10);
-  if (countries.length === 0) return null;
+  if (!countries.length) return null;
 
-  const chart = new ChartJSNodeCanvas({ width: 1000, height: 600 });
-  const configuration = {
+  const chart = new ChartJSNodeCanvas({ width: 900, height: 500 });
+  const cfg = {
     type: "bar",
     data: {
       labels: countries.map((c) => c.name),
@@ -50,60 +48,45 @@ async function generateSummaryImage() {
       ],
     },
     options: {
-      plugins: {
-        title: {
-          display: true,
-          text: "Top 10 Countries by Estimated GDP",
-          font: { size: 22 },
-        },
-        legend: { display: false },
-      },
-      scales: {
-        x: { ticks: { color: "#000" } },
-        y: { ticks: { color: "#000" } },
-      },
+      plugins: { legend: { display: false } },
+      scales: { x: { ticks: { color: "#000" } }, y: { ticks: { color: "#000" } } },
     },
   };
-
-  const buffer = await chart.renderToBuffer(configuration, "image/png");
-  fs.writeFileSync(cachePath, buffer);
-  console.log("✅ PNG chart created:", cachePath);
-  return cachePath;
+  fs.writeFileSync(cachePath, await chart.renderToBuffer(cfg, "image/png"));
+  console.log("✅ Summary PNG generated");
 }
 
-// 🟢 POST /countries/refresh
+// 🟢 POST /countries/refresh — Fast bulk load
 app.post("/countries/refresh", async (req, res) => {
+  console.log("📡 Incoming POST /countries/refresh");
   try {
-    console.log("🌍 Refreshing countries...");
-    const response = await fetch(
-      "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
-    );
-    const data = await response.json();
+    console.log("🌍 Fetching countries...");
+    const api = "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies";
+    const response = await fetch(api);
+    const countries = await response.json();
 
+    if (!Array.isArray(countries)) throw new Error("Invalid API response");
+
+    // Drop + bulk insert
     await Country.deleteMany({});
-
-    const bulkOps = data.map((c) => {
+    const docs = countries.map((c) => {
       const currency_code = c.currencies?.[0]?.code || "USD";
-      const exchange_rate = Math.random() * (2000 - 1000) + 1000;
+      const exchange_rate = +(Math.random() * 1000 + 1000).toFixed(2);
       const estimated_gdp = Math.round((c.population * exchange_rate) / 1000);
-
       return {
-        insertOne: {
-          document: {
-            name: c.name,
-            capital: c.capital,
-            region: c.region,
-            population: c.population,
-            flag: c.flag,
-            currency_code,
-            exchange_rate,
-            estimated_gdp,
-          },
-        },
+        name: c.name,
+        capital: c.capital,
+        region: c.region,
+        population: c.population,
+        flag: c.flag,
+        currency_code,
+        exchange_rate,
+        estimated_gdp,
       };
     });
 
-    await Country.bulkWrite(bulkOps);
+    // ⚡ Super-fast insertMany (bulk write)
+    await Country.insertMany(docs, { ordered: false });
     await generateSummaryImage();
 
     const total = await Country.countDocuments();
@@ -116,14 +99,12 @@ app.post("/countries/refresh", async (req, res) => {
 
 // 🟢 GET /countries/image
 app.get("/countries/image", (req, res) => {
-  if (!fs.existsSync(cachePath)) {
-    return res.status(404).json({ error: "Summary image not found" });
-  }
+  if (!fs.existsSync(cachePath)) return res.status(404).json({ error: "Summary image not found" });
   res.setHeader("Content-Type", "image/png");
   res.sendFile(path.resolve(cachePath));
 });
 
-// 🟢 GET /countries (with filters & sorting)
+// 🟢 GET /countries (filter & sort)
 app.get("/countries", async (req, res) => {
   try {
     const { region, currency, sort } = req.query;
@@ -134,8 +115,7 @@ app.get("/countries", async (req, res) => {
     let query = Country.find(filter);
     if (sort === "desc") query = query.sort({ estimated_gdp: -1 });
 
-    const countries = await query;
-    res.json(countries);
+    res.json(await query);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -160,8 +140,7 @@ app.delete("/countries/:name", async (req, res) => {
     const result = await Country.deleteOne({
       name: { $regex: new RegExp(`^${req.params.name}$`, "i") },
     });
-    if (result.deletedCount === 0)
-      return res.status(404).json({ error: "Country not found" });
+    if (!result.deletedCount) return res.status(404).json({ error: "Country not found" });
     res.json({ message: "Country deleted successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -172,14 +151,10 @@ app.delete("/countries/:name", async (req, res) => {
 app.get("/status", async (req, res) => {
   try {
     const total = await Country.countDocuments();
-    const stats = fs.existsSync(cachePath)
-      ? fs.statSync(cachePath)
-      : { mtime: new Date() };
-    res.json({
-      status: "ok",
-      total_countries: total,
-      last_refreshed_at: stats.mtime.toISOString(),
-    });
+    const lastRefreshed = fs.existsSync(cachePath)
+      ? fs.statSync(cachePath).mtime.toISOString()
+      : new Date().toISOString();
+    res.json({ status: "ok", total_countries: total, last_refreshed_at: lastRefreshed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -188,6 +163,6 @@ app.get("/status", async (req, res) => {
 // 🟡 404 fallback
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
 
-// 🚀 Server Start
+// 🚀 Server
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
