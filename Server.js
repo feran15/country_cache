@@ -57,7 +57,7 @@ async function generateSummaryImage() {
 }
 
 // 🟢 POST /countries/refresh — Fast bulk load
-app.post("/countries/refresh", async (req, res) => {
+app.post("/Countries/refresh", async (req, res) => {
   console.log("📡 Incoming POST /countries/refresh");
   try {
     console.log("🌍 Fetching countries...");
