@@ -77,44 +77,52 @@ async function generateSummaryImage() {
   }
 }
 
-// POST /countries/refresh (Optimized)
+// 🟢 POST /countries/refresh (async + fast)
 app.post("/countries/refresh", async (req, res) => {
   try {
-    console.time("RefreshTime");
-    const data = await fetch(
-      "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
-    ).then((r) => r.json());
+    res.json({ message: "Refreshing countries in background..." });
 
-    await Country.deleteMany({});
+    // Run heavy task async (no wait)
+    (async () => {
+      const data = await fetch(
+        "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
+      ).then((r) => r.json());
 
-    const countries = data.map((c) => {
-      const currency_code = c.currencies?.[0]?.code || "USD";
-      const exchange_rate = Math.random() * (2000 - 1000) + 1000;
-      const estimated_gdp = Math.round((c.population * exchange_rate) / 1000);
-      return {
-        name: c.name,
-        capital: c.capital,
-        region: c.region,
-        population: c.population,
-        flag: c.flag,
-        currency_code,
-        exchange_rate,
-        estimated_gdp,
-      };
-    });
+      await Country.deleteMany({});
 
-    await Country.insertMany(countries);
+      const bulkOps = data.map((c) => {
+        const currency_code = c.currencies?.[0]?.code || "USD";
+        const exchange_rate = Math.random() * (2000 - 1000) + 1000;
+        const estimated_gdp = Math.round((c.population * exchange_rate) / 1000);
+        return {
+          insertOne: {
+            document: {
+              name: c.name,
+              capital: c.capital,
+              region: c.region,
+              population: c.population,
+              flag: c.flag,
+              currency_code,
+              exchange_rate,
+              estimated_gdp,
+            },
+          },
+        };
+      });
 
-    // Generate image asynchronously
-    generateSummaryImage()
-      .then(() => console.log("✅ Image generated in background"))
-      .catch((err) => console.error("❌ Image gen error:", err));
+      await Country.bulkWrite(bulkOps);
+      await generateSummaryImage();
 
-    console.timeEnd("RefreshTime");
-    res.status(200).json({ message: "Countries refreshed", total: countries.length });
+      fs.writeFileSync(
+        path.join(process.cwd(), "summary.txt"),
+        `Refreshed at ${new Date().toISOString()}`
+      );
+
+      console.log(`✅ Refreshed ${data.length} countries successfully`);
+    })();
   } catch (err) {
-    console.error("❌ Refresh error:", err.message);
-    res.status(500).json({ error: "Failed to refresh countries" });
+    console.error("❌ Error:", err);
+    res.status(500).json({ error: "Failed to start refresh" });
   }
 });
 
