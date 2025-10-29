@@ -77,54 +77,69 @@ async function generateSummaryImage() {
   }
 }
 
-// 🟢 POST /countries/refresh (async + fast)
+import fetch from "node-fetch";
+import AbortController from "abort-controller";
+
 app.post("/countries/refresh", async (req, res) => {
   try {
-    res.json({ message: "Refreshing countries in background..." });
+    // Respond right away
+    res.status(200).json({ message: "Refresh started in background" });
 
-    // Run heavy task async (no wait)
+    // Run refresh in background
     (async () => {
-      const data = await fetch(
-        "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies"
-      ).then((r) => r.json());
+      console.log("🌍 Starting refresh job...");
 
-      await Country.deleteMany({});
+      // Timeout controller (to prevent hanging fetch)
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
 
-      const bulkOps = data.map((c) => {
-        const currency_code = c.currencies?.[0]?.code || "USD";
-        const exchange_rate = Math.random() * (2000 - 1000) + 1000;
-        const estimated_gdp = Math.round((c.population * exchange_rate) / 1000);
-        return {
-          insertOne: {
-            document: {
-              name: c.name,
-              capital: c.capital,
-              region: c.region,
-              population: c.population,
-              flag: c.flag,
-              currency_code,
-              exchange_rate,
-              estimated_gdp,
+      let data = [];
+      try {
+        const response = await fetch(
+          "https://restcountries.com/v2/all?fields=name,capital,region,population,flag,currencies",
+          { signal: controller.signal }
+        );
+        clearTimeout(timeout);
+        data = await response.json();
+      } catch (err) {
+        console.error("❌ Fetch failed:", err.message);
+        return;
+      }
+
+      try {
+        await Country.deleteMany({});
+        const bulkOps = data.map((c) => {
+          const currency_code = c.currencies?.[0]?.code || "USD";
+          const exchange_rate = Math.random() * (2000 - 1000) + 1000;
+          const estimated_gdp = Math.round((c.population * exchange_rate) / 1000);
+          return {
+            insertOne: {
+              document: {
+                name: c.name,
+                capital: c.capital,
+                region: c.region,
+                population: c.population,
+                flag: c.flag,
+                currency_code,
+                exchange_rate,
+                estimated_gdp,
+              },
             },
-          },
-        };
-      });
+          };
+        });
 
-      await Country.bulkWrite(bulkOps);
-      await generateSummaryImage();
-
-      fs.writeFileSync(
-        path.join(process.cwd(), "summary.txt"),
-        `Refreshed at ${new Date().toISOString()}`
-      );
-
-      console.log(`✅ Refreshed ${data.length} countries successfully`);
+        await Country.bulkWrite(bulkOps);
+        console.log(`✅ Refreshed ${data.length} countries`);
+      } catch (err) {
+        console.error("❌ Mongo write failed:", err.message);
+      }
     })();
   } catch (err) {
-    console.error("❌ Error:", err);
+    console.error("❌ Unexpected error:", err.message);
     res.status(500).json({ error: "Failed to start refresh" });
   }
 });
+
 
 // GET /countries/image
 app.get("/countries/image", (req, res) => {
