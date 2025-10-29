@@ -203,6 +203,18 @@ app.delete("/countries/:name", async (req, res) => {
   }
 });
 
+app.get("/", (req, res) => {
+  res.json({
+    message: "🌍 Country Cache API is live!",
+    endpoints: {
+      refresh: "/countries/refresh",
+      list: "/countries",
+      image: "/countries/image",
+      status: "/status"
+    },
+  });
+});
+
 // 404 handler
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
 
